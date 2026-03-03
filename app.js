@@ -199,7 +199,7 @@ function renderFrameCards() {
     const delayInput = document.createElement('input');
     delayInput.type = 'number';
     delayInput.className = 'frame-delay-input';
-    delayInput.min = 10;
+    delayInput.min = 7;
     delayInput.max = 10000;
     delayInput.step = 10;
     delayInput.value = frame.delay;
@@ -207,7 +207,7 @@ function renderFrameCards() {
     delayInput.addEventListener('click', e => e.stopPropagation());
     delayInput.addEventListener('focus', () => pushUndo());
     delayInput.addEventListener('change', e => {
-      frame.delay = Math.max(10, parseInt(e.target.value) || 100);
+      frame.delay = Math.max(7, parseInt(e.target.value) || 100);
       e.target.value = frame.delay;
     });
     info.appendChild(delayInput);
@@ -321,7 +321,7 @@ document.getElementById('btn-invert-selection').addEventListener('click', () => 
 // ── Bulk set timing ────────────────────────────────────────────────
 document.getElementById('btn-set-delay').addEventListener('click', () => {
   pushUndo();
-  const delay = Math.max(10, parseInt(bulkDelay.value) || 100);
+  const delay = Math.max(7, parseInt(bulkDelay.value) || 100);
   let changed = 0;
   frames.forEach(f => {
     if (f.selected) {
