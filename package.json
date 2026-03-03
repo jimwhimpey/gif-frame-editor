@@ -1,0 +1,30 @@
+{
+  "name": "gif-editor",
+  "version": "1.0.0",
+  "description": "",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jimwhimpey/gif-frame-editor.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/jimwhimpey/gif-frame-editor/issues"
+  },
+  "homepage": "https://github.com/jimwhimpey/gif-frame-editor#readme",
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vite": "^7.3.1"
+  },
+  "dependencies": {
+    "gifuct-js": "^2.1.2"
+  }
+}

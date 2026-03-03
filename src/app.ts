@@ -1,21 +1,51 @@
-import { parseGIF, decompressFrames } from 'https://esm.sh/gifuct-js@2.1.2';
+import './style.css';
+import { parseGIF, decompressFrames } from 'gifuct-js';
+
+// ── Types ──────────────────────────────────────────────────────────
+
+interface Frame {
+  imageData: ImageData;
+  delay: number;
+  selected: boolean;
+}
+
+interface UndoSnapshot {
+  frames: Frame[];
+  currentFrame: number;
+}
+
+interface EncodedFrame {
+  palette: number[][];
+  indexed: Uint8Array;
+  delay: number;
+  transparentIndex: number;
+}
+
+interface QuantizeResult {
+  palette: number[][];
+  indexed: Uint8Array;
+  transparentIndex: number;
+}
 
 // ── State ──────────────────────────────────────────────────────────
-let frames = [];        // { imageData, delay, selected }
+
+let frames: Frame[] = [];
 let gifWidth = 0;
 let gifHeight = 0;
 let playing = false;
-let playTimer = null;
+let playTimer: ReturnType<typeof setTimeout> | null = null;
 let currentFrame = 0;
+let lastClickedIndex: number | null = null;
 
 // ── Undo stack ─────────────────────────────────────────────────────
-const undoStack = [];
+
+const undoStack: UndoSnapshot[] = [];
 const MAX_UNDO = 30;
 
-function pushUndo() {
+function pushUndo(): void {
   undoStack.push({
     frames: frames.map(f => ({
-      imageData: f.imageData, // ImageData is not mutated, safe to share reference
+      imageData: f.imageData,
       delay: f.delay,
       selected: f.selected,
     })),
@@ -25,9 +55,9 @@ function pushUndo() {
   syncUndoButton();
 }
 
-function popUndo() {
+function popUndo(): void {
   if (undoStack.length === 0) return;
-  const snapshot = undoStack.pop();
+  const snapshot = undoStack.pop()!;
   frames = snapshot.frames;
   currentFrame = Math.min(snapshot.currentFrame, frames.length - 1);
   lastClickedIndex = null;
@@ -36,26 +66,28 @@ function popUndo() {
   syncUndoButton();
 }
 
-function syncUndoButton() {
-  const btn = document.getElementById('btn-undo');
+function syncUndoButton(): void {
+  const btn = document.getElementById('btn-undo') as HTMLButtonElement;
   btn.disabled = undoStack.length === 0;
 }
 
 // ── DOM refs ───────────────────────────────────────────────────────
-const uploadArea      = document.getElementById('upload-area');
-const fileInput       = document.getElementById('file-input');
-const editor          = document.getElementById('editor');
-const previewCanvas   = document.getElementById('preview-canvas');
-const previewCtx      = previewCanvas.getContext('2d');
-const frameCounter    = document.getElementById('preview-frame-counter');
-const framesContainer = document.getElementById('frames-container');
-const selectionCount  = document.getElementById('selection-count');
-const bulkDelay       = document.getElementById('bulk-delay');
-const progressWrap    = document.getElementById('export-progress');
-const progressFill    = document.getElementById('progress-fill');
-const progressText    = document.getElementById('progress-text');
+
+const uploadArea = document.getElementById('upload-area')!;
+const fileInput = document.getElementById('file-input') as HTMLInputElement;
+const editor = document.getElementById('editor')!;
+const previewCanvas = document.getElementById('preview-canvas') as HTMLCanvasElement;
+const previewCtx = previewCanvas.getContext('2d')!;
+const frameCounter = document.getElementById('preview-frame-counter')!;
+const framesContainer = document.getElementById('frames-container')!;
+const selectionCount = document.getElementById('selection-count')!;
+const bulkDelay = document.getElementById('bulk-delay') as HTMLInputElement;
+const progressWrap = document.getElementById('export-progress')!;
+const progressFill = document.getElementById('progress-fill')!;
+const progressText = document.getElementById('progress-text')!;
 
 // ── Upload handling ────────────────────────────────────────────────
+
 uploadArea.addEventListener('click', () => fileInput.click());
 
 document.addEventListener('dragover', e => e.preventDefault());
@@ -71,15 +103,16 @@ uploadArea.addEventListener('drop', e => {
   e.preventDefault();
   e.stopPropagation();
   uploadArea.classList.remove('dragover');
-  const file = e.dataTransfer.files[0];
+  const file = e.dataTransfer?.files[0];
   if (file) loadGif(file);
 });
 fileInput.addEventListener('change', () => {
-  if (fileInput.files[0]) loadGif(fileInput.files[0]);
+  if (fileInput.files?.[0]) loadGif(fileInput.files[0]);
 });
 
-// ── GIF loading (using gifuct-js) ────────────────────────────────
-async function loadGif(file) {
+// ── GIF loading ────────────────────────────────────────────────────
+
+async function loadGif(file: File): Promise<void> {
   stopPlayback();
   frames = [];
   undoStack.length = 0;
@@ -92,7 +125,7 @@ async function loadGif(file) {
     const gif = parseGIF(buf);
     rawFrames = decompressFrames(gif, true);
   } catch (err) {
-    alert('Failed to parse GIF: ' + err.message);
+    alert('Failed to parse GIF: ' + (err as Error).message);
     return;
   }
 
@@ -101,48 +134,41 @@ async function loadGif(file) {
     return;
   }
 
-  gifWidth  = rawFrames[0].dims.width;
+  gifWidth = rawFrames[0].dims.width;
   gifHeight = rawFrames[0].dims.height;
 
-  // Compositing canvas — handles disposal methods, partial frames, transparency
   const compCanvas = document.createElement('canvas');
   compCanvas.width = gifWidth;
   compCanvas.height = gifHeight;
-  const compCtx = compCanvas.getContext('2d');
+  const compCtx = compCanvas.getContext('2d')!;
 
   const prevCanvas = document.createElement('canvas');
   prevCanvas.width = gifWidth;
   prevCanvas.height = gifHeight;
-  const prevCtx = prevCanvas.getContext('2d');
+  const prevCtx = prevCanvas.getContext('2d')!;
 
   for (let i = 0; i < rawFrames.length; i++) {
     const raw = rawFrames[i];
     const { dims, delay, disposalType, patch } = raw;
 
-    // Save state before drawing for dispose-to-previous
     if (disposalType === 3) {
       prevCtx.clearRect(0, 0, gifWidth, gifHeight);
       prevCtx.drawImage(compCanvas, 0, 0);
     }
 
-    // Create ImageData from the RGBA patch
     const patchImageData = new ImageData(
       new Uint8ClampedArray(patch),
       dims.width,
       dims.height
     );
 
-    // Draw patch onto a temp canvas, then composite onto the main canvas
     const tempCanvas = document.createElement('canvas');
     tempCanvas.width = dims.width;
     tempCanvas.height = dims.height;
-    tempCanvas.getContext('2d').putImageData(patchImageData, 0, 0);
+    tempCanvas.getContext('2d')!.putImageData(patchImageData, 0, 0);
     compCtx.drawImage(tempCanvas, dims.left, dims.top);
 
-    // Capture the fully composited frame
     const frameImageData = compCtx.getImageData(0, 0, gifWidth, gifHeight);
-
-    // GIF delay is in centiseconds; 0 or very small typically means 100ms
     const delayMs = (!delay || delay < 2) ? 100 : delay * 10;
 
     frames.push({
@@ -151,7 +177,6 @@ async function loadGif(file) {
       selected: false,
     });
 
-    // Handle disposal after capturing
     if (disposalType === 2) {
       compCtx.clearRect(dims.left, dims.top, dims.width, dims.height);
     } else if (disposalType === 3) {
@@ -171,17 +196,18 @@ async function loadGif(file) {
 }
 
 // ── Frame card rendering ──────────────────────────────────────────
-function renderFrameCards() {
+
+function renderFrameCards(): void {
   framesContainer.innerHTML = '';
   frames.forEach((frame, i) => {
     const card = document.createElement('div');
     card.className = 'frame-card' + (frame.selected ? ' selected' : '');
-    card.dataset.index = i;
+    card.dataset.index = String(i);
 
     const thumb = document.createElement('canvas');
     thumb.width = gifWidth;
     thumb.height = gifHeight;
-    thumb.getContext('2d').putImageData(frame.imageData, 0, 0);
+    thumb.getContext('2d')!.putImageData(frame.imageData, 0, 0);
     card.appendChild(thumb);
 
     const check = document.createElement('div');
@@ -196,19 +222,19 @@ function renderFrameCards() {
     num.textContent = `#${i + 1}`;
     info.appendChild(num);
 
-    const delayInput = document.createElement('input');
+    const delayInput = document.createElement('input') as HTMLInputElement;
     delayInput.type = 'number';
     delayInput.className = 'frame-delay-input';
-    delayInput.min = 7;
-    delayInput.max = 10000;
-    delayInput.step = 10;
-    delayInput.value = frame.delay;
+    delayInput.min = '7';
+    delayInput.max = '10000';
+    delayInput.step = '10';
+    delayInput.value = String(frame.delay);
     delayInput.title = 'Frame delay (ms)';
     delayInput.addEventListener('click', e => e.stopPropagation());
     delayInput.addEventListener('focus', () => pushUndo());
     delayInput.addEventListener('change', e => {
-      frame.delay = Math.max(7, parseInt(e.target.value) || 100);
-      e.target.value = frame.delay;
+      frame.delay = Math.max(7, parseInt((e.target as HTMLInputElement).value) || 100);
+      (e.target as HTMLInputElement).value = String(frame.delay);
     });
     info.appendChild(delayInput);
 
@@ -219,11 +245,11 @@ function renderFrameCards() {
     card.appendChild(info);
 
     card.addEventListener('click', e => {
-      if (e.target.closest('.frame-delay-input')) return;
+      if ((e.target as HTMLElement).closest('.frame-delay-input')) return;
 
       if (e.shiftKey && lastClickedIndex !== null) {
         const start = Math.min(lastClickedIndex, i);
-        const end   = Math.max(lastClickedIndex, i);
+        const end = Math.max(lastClickedIndex, i);
         const newState = !frame.selected;
         for (let j = start; j <= end; j++) {
           frames[j].selected = newState;
@@ -242,9 +268,7 @@ function renderFrameCards() {
   syncSelectionUI();
 }
 
-let lastClickedIndex = null;
-
-function syncSelectionUI() {
+function syncSelectionUI(): void {
   const cards = framesContainer.querySelectorAll('.frame-card');
   let count = 0;
   frames.forEach((f, i) => {
@@ -255,7 +279,8 @@ function syncSelectionUI() {
 }
 
 // ── Preview ────────────────────────────────────────────────────────
-function showFrame(idx) {
+
+function showFrame(idx: number): void {
   if (idx < 0 || idx >= frames.length) return;
   currentFrame = idx;
   previewCtx.putImageData(frames[idx].imageData, 0, 0);
@@ -263,15 +288,16 @@ function showFrame(idx) {
 }
 
 // ── Playback ───────────────────────────────────────────────────────
-function startPlayback() {
+
+function startPlayback(): void {
   if (frames.length === 0) return;
   playing = true;
-  document.getElementById('icon-play').classList.add('hidden');
-  document.getElementById('icon-pause').classList.remove('hidden');
+  document.getElementById('icon-play')!.classList.add('hidden');
+  document.getElementById('icon-pause')!.classList.remove('hidden');
   playNextFrame();
 }
 
-function playNextFrame() {
+function playNextFrame(): void {
   if (!playing) return;
   showFrame(currentFrame);
   playTimer = setTimeout(() => {
@@ -280,20 +306,21 @@ function playNextFrame() {
   }, frames[currentFrame].delay);
 }
 
-function stopPlayback() {
+function stopPlayback(): void {
   playing = false;
-  clearTimeout(playTimer);
+  if (playTimer !== null) clearTimeout(playTimer);
   document.getElementById('icon-play')?.classList.remove('hidden');
   document.getElementById('icon-pause')?.classList.add('hidden');
 }
 
-document.getElementById('btn-play').addEventListener('click', () => {
+document.getElementById('btn-play')!.addEventListener('click', () => {
   if (playing) stopPlayback();
   else startPlayback();
 });
 
 // ── Undo controls ────────────────────────────────────────────────
-document.getElementById('btn-undo').addEventListener('click', () => popUndo());
+
+document.getElementById('btn-undo')!.addEventListener('click', () => popUndo());
 
 document.addEventListener('keydown', e => {
   if ((e.metaKey || e.ctrlKey) && e.key === 'z' && !e.shiftKey) {
@@ -303,23 +330,25 @@ document.addEventListener('keydown', e => {
 });
 
 // ── Selection controls ─────────────────────────────────────────────
-document.getElementById('btn-select-all').addEventListener('click', () => {
+
+document.getElementById('btn-select-all')!.addEventListener('click', () => {
   frames.forEach(f => f.selected = true);
   syncSelectionUI();
 });
 
-document.getElementById('btn-select-none').addEventListener('click', () => {
+document.getElementById('btn-select-none')!.addEventListener('click', () => {
   frames.forEach(f => f.selected = false);
   syncSelectionUI();
 });
 
-document.getElementById('btn-invert-selection').addEventListener('click', () => {
+document.getElementById('btn-invert-selection')!.addEventListener('click', () => {
   frames.forEach(f => f.selected = !f.selected);
   syncSelectionUI();
 });
 
 // ── Bulk set timing ────────────────────────────────────────────────
-document.getElementById('btn-set-delay').addEventListener('click', () => {
+
+document.getElementById('btn-set-delay')!.addEventListener('click', () => {
   pushUndo();
   const delay = Math.max(7, parseInt(bulkDelay.value) || 100);
   let changed = 0;
@@ -337,7 +366,8 @@ document.getElementById('btn-set-delay').addEventListener('click', () => {
 });
 
 // ── Bulk remove frames ─────────────────────────────────────────────
-document.getElementById('btn-remove-frames').addEventListener('click', () => {
+
+document.getElementById('btn-remove-frames')!.addEventListener('click', () => {
   const selected = frames.filter(f => f.selected);
   if (selected.length === 0) return;
   if (selected.length === frames.length) {
@@ -353,7 +383,8 @@ document.getElementById('btn-remove-frames').addEventListener('click', () => {
 });
 
 // ── Load new GIF ───────────────────────────────────────────────────
-document.getElementById('btn-load-new').addEventListener('click', () => {
+
+document.getElementById('btn-load-new')!.addEventListener('click', () => {
   stopPlayback();
   frames = [];
   framesContainer.innerHTML = '';
@@ -363,9 +394,10 @@ document.getElementById('btn-load-new').addEventListener('click', () => {
 });
 
 // ── GIF Export ─────────────────────────────────────────────────────
-document.getElementById('btn-export').addEventListener('click', () => exportGif());
 
-async function exportGif() {
+document.getElementById('btn-export')!.addEventListener('click', () => exportGif());
+
+async function exportGif(): Promise<void> {
   if (frames.length === 0) return;
 
   progressWrap.classList.remove('hidden');
@@ -382,7 +414,7 @@ async function exportGif() {
     await sleep(0);
 
     const rgba = frames[i].imageData.data;
-    const delay = Math.round(frames[i].delay / 10); // GIF delay is in centiseconds
+    const delay = Math.round(frames[i].delay / 10);
     encoder.addFrame(rgba, delay);
   }
 
@@ -402,25 +434,29 @@ async function exportGif() {
   URL.revokeObjectURL(url);
 }
 
-function sleep(ms) {
+function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms));
 }
 
 // ── Minimal GIF89a Encoder ─────────────────────────────────────────
+
 class GifEncoder {
-  constructor(width, height) {
+  private width: number;
+  private height: number;
+  private frames: EncodedFrame[] = [];
+
+  constructor(width: number, height: number) {
     this.width = width;
     this.height = height;
-    this.frames = [];
   }
 
-  addFrame(rgba, delay) {
+  addFrame(rgba: Uint8ClampedArray, delay: number): void {
     const { palette, indexed, transparentIndex } = this.quantize(rgba);
     this.frames.push({ palette, indexed, delay, transparentIndex });
   }
 
-  quantize(rgba) {
-    const colorCounts = new Map();
+  private quantize(rgba: Uint8ClampedArray): QuantizeResult {
+    const colorCounts = new Map<number, number>();
     const pixels = this.width * this.height;
 
     for (let i = 0; i < pixels; i++) {
@@ -435,8 +471,7 @@ class GifEncoder {
     }
 
     const sorted = [...colorCounts.entries()].sort((a, b) => b[1] - a[1]);
-    const maxColors = 255;
-    const paletteColors = sorted.slice(0, maxColors).map(([key]) => [
+    const paletteColors: number[][] = sorted.slice(0, 255).map(([key]) => [
       (key >> 16) & 0xFF,
       (key >> 8) & 0xFF,
       key & 0xFF,
@@ -450,7 +485,7 @@ class GifEncoder {
       paletteColors.push([0, 0, 0]);
     }
 
-    const lookup = new Map();
+    const lookup = new Map<number, number>();
     for (let i = 0; i < transparentIndex; i++) {
       const [r, g, b] = paletteColors[i];
       const key = ((r & 0xF8) << 16) | ((g & 0xF8) << 8) | (b & 0xF8);
@@ -473,14 +508,14 @@ class GifEncoder {
       if (exact !== undefined) {
         indexed[i] = exact;
       } else {
-        indexed[i] = this.nearestColor(rgba[off], rgba[off+1], rgba[off+2], paletteColors, transparentIndex);
+        indexed[i] = this.nearestColor(rgba[off], rgba[off + 1], rgba[off + 2], paletteColors, transparentIndex);
       }
     }
 
     return { palette: paletteColors, indexed, transparentIndex };
   }
 
-  nearestColor(r, g, b, palette, limit) {
+  private nearestColor(r: number, g: number, b: number, palette: number[][], limit: number): number {
     let best = 0;
     let bestDist = Infinity;
     for (let i = 0; i < limit; i++) {
@@ -496,8 +531,8 @@ class GifEncoder {
     return best;
   }
 
-  finish() {
-    const buf = [];
+  finish(): Blob {
+    const buf: number[] = [];
 
     writeStr(buf, 'GIF89a');
 
@@ -518,14 +553,12 @@ class GifEncoder {
       const { palette, indexed, delay, transparentIndex } = frame;
       const colorTableBits = log2(palette.length);
 
-      // Graphic Control Extension
       buf.push(0x21, 0xF9, 0x04);
-      buf.push(0x05); // dispose to bg + transparent flag
+      buf.push(0x05);
       writeU16(buf, delay);
       buf.push(transparentIndex);
       buf.push(0x00);
 
-      // Image Descriptor
       buf.push(0x2C);
       writeU16(buf, 0);
       writeU16(buf, 0);
@@ -533,12 +566,10 @@ class GifEncoder {
       writeU16(buf, this.height);
       buf.push(0x80 | (colorTableBits - 1));
 
-      // Local Color Table
       for (let i = 0; i < palette.length; i++) {
         buf.push(palette[i][0], palette[i][1], palette[i][2]);
       }
 
-      // LZW
       const minCodeSize = Math.max(2, colorTableBits);
       const lzwData = lzwEncode(indexed, minCodeSize);
       buf.push(minCodeSize);
@@ -562,16 +593,17 @@ class GifEncoder {
 }
 
 // ── LZW Encoder ────────────────────────────────────────────────────
-function lzwEncode(indexed, minCodeSize) {
+
+function lzwEncode(indexed: Uint8Array, minCodeSize: number): number[] {
   const clearCode = 1 << minCodeSize;
   const eoiCode = clearCode + 1;
-  const output = [];
+  const output: number[] = [];
   let codeSize = minCodeSize + 1;
   let nextCode = eoiCode + 1;
   const maxTableSize = 4096;
 
-  let table = new Map();
-  function initTable() {
+  let table = new Map<string, number>();
+  function initTable(): void {
     table = new Map();
     for (let i = 0; i < clearCode; i++) {
       table.set(String(i), i);
@@ -582,7 +614,7 @@ function lzwEncode(indexed, minCodeSize) {
 
   let bitBuf = 0;
   let bitCount = 0;
-  function writeBits(code, size) {
+  function writeBits(code: number, size: number): void {
     bitBuf |= (code << bitCount);
     bitCount += size;
     while (bitCount >= 8) {
@@ -608,7 +640,7 @@ function lzwEncode(indexed, minCodeSize) {
     if (table.has(next)) {
       current = next;
     } else {
-      writeBits(table.get(current), codeSize);
+      writeBits(table.get(current)!, codeSize);
       if (nextCode < maxTableSize) {
         table.set(next, nextCode);
         nextCode++;
@@ -623,7 +655,7 @@ function lzwEncode(indexed, minCodeSize) {
     }
   }
 
-  writeBits(table.get(current), codeSize);
+  writeBits(table.get(current)!, codeSize);
   writeBits(eoiCode, codeSize);
   if (bitCount > 0) output.push(bitBuf & 0xFF);
 
@@ -631,21 +663,22 @@ function lzwEncode(indexed, minCodeSize) {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────
-function writeStr(buf, str) {
+
+function writeStr(buf: number[], str: string): void {
   for (let i = 0; i < str.length; i++) buf.push(str.charCodeAt(i));
 }
 
-function writeU16(buf, val) {
+function writeU16(buf: number[], val: number): void {
   buf.push(val & 0xFF, (val >> 8) & 0xFF);
 }
 
-function nextPow2(n) {
+function nextPow2(n: number): number {
   let v = 2;
   while (v < n) v <<= 1;
   return Math.min(v, 256);
 }
 
-function log2(n) {
+function log2(n: number): number {
   let v = 0;
   let t = 1;
   while (t < n) { t <<= 1; v++; }
