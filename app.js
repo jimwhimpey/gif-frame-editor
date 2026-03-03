@@ -8,6 +8,39 @@ let playing = false;
 let playTimer = null;
 let currentFrame = 0;
 
+// ── Undo stack ─────────────────────────────────────────────────────
+const undoStack = [];
+const MAX_UNDO = 30;
+
+function pushUndo() {
+  undoStack.push({
+    frames: frames.map(f => ({
+      imageData: f.imageData, // ImageData is not mutated, safe to share reference
+      delay: f.delay,
+      selected: f.selected,
+    })),
+    currentFrame,
+  });
+  if (undoStack.length > MAX_UNDO) undoStack.shift();
+  syncUndoButton();
+}
+
+function popUndo() {
+  if (undoStack.length === 0) return;
+  const snapshot = undoStack.pop();
+  frames = snapshot.frames;
+  currentFrame = Math.min(snapshot.currentFrame, frames.length - 1);
+  lastClickedIndex = null;
+  renderFrameCards();
+  showFrame(currentFrame);
+  syncUndoButton();
+}
+
+function syncUndoButton() {
+  const btn = document.getElementById('btn-undo');
+  btn.disabled = undoStack.length === 0;
+}
+
 // ── DOM refs ───────────────────────────────────────────────────────
 const uploadArea      = document.getElementById('upload-area');
 const fileInput       = document.getElementById('file-input');
@@ -49,6 +82,8 @@ fileInput.addEventListener('change', () => {
 async function loadGif(file) {
   stopPlayback();
   frames = [];
+  undoStack.length = 0;
+  syncUndoButton();
   framesContainer.innerHTML = '';
 
   const buf = await file.arrayBuffer();
@@ -170,6 +205,7 @@ function renderFrameCards() {
     delayInput.value = frame.delay;
     delayInput.title = 'Frame delay (ms)';
     delayInput.addEventListener('click', e => e.stopPropagation());
+    delayInput.addEventListener('focus', () => pushUndo());
     delayInput.addEventListener('change', e => {
       frame.delay = Math.max(10, parseInt(e.target.value) || 100);
       e.target.value = frame.delay;
@@ -256,6 +292,16 @@ document.getElementById('btn-play').addEventListener('click', () => {
   else startPlayback();
 });
 
+// ── Undo controls ────────────────────────────────────────────────
+document.getElementById('btn-undo').addEventListener('click', () => popUndo());
+
+document.addEventListener('keydown', e => {
+  if ((e.metaKey || e.ctrlKey) && e.key === 'z' && !e.shiftKey) {
+    e.preventDefault();
+    popUndo();
+  }
+});
+
 // ── Selection controls ─────────────────────────────────────────────
 document.getElementById('btn-select-all').addEventListener('click', () => {
   frames.forEach(f => f.selected = true);
@@ -274,6 +320,7 @@ document.getElementById('btn-invert-selection').addEventListener('click', () => 
 
 // ── Bulk set timing ────────────────────────────────────────────────
 document.getElementById('btn-set-delay').addEventListener('click', () => {
+  pushUndo();
   const delay = Math.max(10, parseInt(bulkDelay.value) || 100);
   let changed = 0;
   frames.forEach(f => {
@@ -297,6 +344,7 @@ document.getElementById('btn-remove-frames').addEventListener('click', () => {
     alert('Cannot remove all frames.');
     return;
   }
+  pushUndo();
   frames = frames.filter(f => !f.selected);
   currentFrame = Math.min(currentFrame, frames.length - 1);
   lastClickedIndex = null;
